@@ -1,12 +1,7 @@
 import { JSDOM } from 'jsdom';
-import { DayOfWeek, Restaurant, Meal, MenuItem } from "../../types/meal";
+import { DayOfWeek, Restaurant, Meal, MenuItem } from '../../types/meal';
 import { getDayOfWeek } from '../utils/day';
-import { fileURLToPath } from 'url';
-import { promises as fs } from 'fs'; 
-import * as path from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { fetchAndParse } from '../utils/crawler';
 
 // 파싱 대상 레스토랑 목록 (DTO 기준)
 const TARGET_RESTAURANTS_FLOOR3: Set<Restaurant> = new Set([
@@ -16,15 +11,18 @@ const TARGET_RESTAURANTS_FLOOR3: Set<Restaurant> = new Set([
 
 // HTML '구분' 텍스트 -> DTO Restaurant 이름 매핑
 const restaurantMapFloor3: { [key: string]: Restaurant } = {
-  '집밥': '상록원3층식당 - 집밥',
+  집밥: '상록원3층식당 - 집밥',
   '한그릇(한정판매)': '상록원3층식당 - 한그릇(한정판매)',
 };
 
 /**
  * 2층/3층 메뉴 셀(<td>)의 innerHTML을 파싱하여 MenuItem 배열로 변환
  */
-function parseMenuCellFloor3(cellHtml: string): { items: MenuItem[], status: 'open' | 'closed' | 'unavailable', notes?: string } {
-  
+function parseMenuCellFloor3(cellHtml: string): {
+  items: MenuItem[];
+  status: 'open' | 'closed' | 'unavailable';
+  notes?: string;
+} {
   // 휴무 또는 빈 셀 감지
   const cellText = cellHtml.replace(/<[^>]+>/g, '').trim();
   if (cellText.includes('휴무')) {
@@ -35,38 +33,45 @@ function parseMenuCellFloor3(cellHtml: string): { items: MenuItem[], status: 'op
   }
 
   const items: MenuItem[] = [];
-  
+
   // 1. 전체 텍스트에서 영업시간 추출
   const timeRegex = /(\d{2}:\d{2}~\d{2}:\d{2}(\s*\/\s*\d{2}:\d{2}~\d{2}:\d{2})?)/;
   const timeMatch = cellHtml.match(timeRegex);
-  const operatingHours = timeMatch ? timeMatch[1] : undefined; 
+  const operatingHours = timeMatch ? timeMatch[1] : undefined;
 
   // 2. 전체 텍스트에서 세트 메뉴 가격(￦ 4,500) 추출
   const setPriceMatch = cellHtml.match(/￦\s*([\d,]+)/);
   const setPrice = setPriceMatch ? parseInt(setPriceMatch[1].replace(/,/g, ''), 10) : undefined;
 
   const lines = cellHtml.split(/<br\s*\/?>/gi);
-  
+
   if (setPrice) {
     // --- Case 1: '집밥', '한그릇' (세트 메뉴 스타일) ---
     const menuNames: string[] = [];
     for (let line of lines) {
-      line = line.replace(/<span.*<\/span>/gi, '') // 원산지 span
-                 .replace(/<[^>]+>/g, '')           // 기타 태그
-                 .replace(/\(.*\)/g, '')            // (원산지), (품절시까지), (한정판매) 등
-                 .replace(timeRegex, '')            // 시간
-                 .replace(/￦\s*([\d,]+)/, '')     // 가격
-                 .replace(/\*자율배식\*/g, '')      // *자율배식*
-                 .replace(/배추김치\/단무지/g, '')  // 김치/단무지
-                 .replace(/\*\*12시부터 한정판매/g, '') // 한정판매 텍스트
-                 .trim();
-      
+      line = line
+        .replace(/<span.*<\/span>/gi, '') // 원산지 span
+        .replace(/<[^>]+>/g, '') // 기타 태그
+        .replace(/\(.*\)/g, '') // (원산지), (품절시까지), (한정판매) 등
+        .replace(timeRegex, '') // 시간
+        .replace(/￦\s*([\d,]+)/, '') // 가격
+        .replace(/\*자율배식\*/g, '') // *자율배식*
+        .replace(/배추김치\/단무지/g, '') // 김치/단무지
+        .replace(/\*\*12시부터 한정판매/g, '') // 한정판매 텍스트
+        .trim();
+
       if (line) {
         if (line.includes('*')) {
-          const subItems = line.split('*').map(s => s.trim()).filter(Boolean);
+          const subItems = line
+            .split('*')
+            .map(s => s.trim())
+            .filter(Boolean);
           menuNames.push(...subItems);
-        } else if (line.includes('&')) { 
-          const subItems = line.split('&').map(s => s.trim()).filter(Boolean);
+        } else if (line.includes('&')) {
+          const subItems = line
+            .split('&')
+            .map(s => s.trim())
+            .filter(Boolean);
           menuNames.push(...subItems);
         } else {
           menuNames.push(line);
@@ -82,14 +87,15 @@ function parseMenuCellFloor3(cellHtml: string): { items: MenuItem[], status: 'op
     }
   } else {
     // --- Case 2: '양식', '뚝배기' (3층에는 없음) ---
-    const singleLine = lines.join(' ')
-                            .replace(/<span.*<\/span>/gi, '') 
-                            .replace(/<[^>]+>/g, '')
-                            .replace(timeRegex, '')
-                            .replace(/-더진국-/g, '')
-                            .replace(/&amp;/g, '&')
-                            .replace(/\s+/g, ' ') 
-                            .trim();
+    const singleLine = lines
+      .join(' ')
+      .replace(/<span.*<\/span>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(timeRegex, '')
+      .replace(/-더진국-/g, '')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
 
     const menuRegex = /(.*?)([\d,]+원)/g;
     let match;
@@ -99,18 +105,19 @@ function parseMenuCellFloor3(cellHtml: string): { items: MenuItem[], status: 'op
       foundMatches = true;
       let name = match[1].trim();
       const priceStr = match[2];
-      
-      name = name.replace(/\(\d{2}:\d{2}~\d{2}:\d{2}\)/g, '')
-                 .replace(/\(한정판매\)/g, '')
-                 .replace(/\[NEW\]/ig, '')
-                 .trim();
-      
-      if (!name) continue; 
+
+      name = name
+        .replace(/\(\d{2}:\d{2}~\d{2}:\d{2}\)/g, '')
+        .replace(/\(한정판매\)/g, '')
+        .replace(/\[NEW\]/gi, '')
+        .trim();
+
+      if (!name) continue;
 
       if (name.includes('/')) {
         const names = name.split('/');
         for (let subName of names) {
-          subName = subName.replace(/\[NEW\]/ig, '').trim();
+          subName = subName.replace(/\[NEW\]/gi, '').trim();
           if (subName) {
             items.push({
               name: [subName],
@@ -127,10 +134,13 @@ function parseMenuCellFloor3(cellHtml: string): { items: MenuItem[], status: 'op
         });
       }
     }
-    
+
     if (!foundMatches) {
       for (let i = 0; i < lines.length; i++) {
-        let nameLine = lines[i].replace(/<[^>]+>/g, '').replace(timeRegex, '').replace(/-더진국-/g, '').trim();
+        let nameLine = lines[i]
+          .replace(/<[^>]+>/g, '')
+          .replace(timeRegex, '')
+          .trim();
         if (!nameLine) continue;
 
         const nextLine = lines[i + 1] || '';
@@ -139,8 +149,11 @@ function parseMenuCellFloor3(cellHtml: string): { items: MenuItem[], status: 'op
         if (nextLinePriceMatch) {
           const price = parseInt(nextLinePriceMatch[1].replace(/,/g, ''), 10);
           i++;
-          
-          nameLine = nameLine.replace(/\(.*\)/g, '').replace(/\[NEW\]/ig, '').trim();
+
+          nameLine = nameLine
+            .replace(/\(.*\)/g, '')
+            .replace(/\[NEW\]/gi, '')
+            .trim();
           if (nameLine) {
             items.push({
               name: [nameLine],
@@ -152,10 +165,10 @@ function parseMenuCellFloor3(cellHtml: string): { items: MenuItem[], status: 'op
       }
     }
   }
-  
+
   // 파싱은 성공했으나 메뉴 아이템이 없는 경우 (e.g. 가격 정보 누락)
   if (items.length === 0) {
-      return { items: [], status: 'unavailable', notes: '메뉴 정보 없음' };
+    return { items: [], status: 'unavailable', notes: '메뉴 정보 없음' };
   }
 
   return { items, status: 'open' };
@@ -170,7 +183,7 @@ function parseFloor3Menu(tableHtml: string, date: Date): Meal[] {
   const dom = new JSDOM(tableHtml);
   const document = dom.window.document;
   const rows = Array.from(document.querySelectorAll<HTMLTableRowElement>('tbody > tr'));
-  
+
   const allMeals: Meal[] = [];
   const day = getDayOfWeek(date);
   const updatedAt = new Date().toISOString();
@@ -184,7 +197,10 @@ function parseFloor3Menu(tableHtml: string, date: Date): Meal[] {
       continue;
     }
 
-    const cornerName = headerCell.textContent?.replace(/<br\s*\/?>/gi, '').replace(/\s+/g, '').trim();
+    const cornerName = headerCell.textContent
+      ?.replace(/<br\s*\/?>/gi, '')
+      .replace(/\s+/g, '')
+      .trim();
     if (!cornerName) continue;
 
     const restaurant = restaurantMapFloor3[cornerName];
@@ -195,8 +211,12 @@ function parseFloor3Menu(tableHtml: string, date: Date): Meal[] {
 
     // 중식 파싱
     const lunchCellHtml = lunchCell.innerHTML.trim();
-    const { items: lunchItems, status: lunchStatus, notes: lunchNotes } = parseMenuCellFloor3(lunchCellHtml);
-    
+    const {
+      items: lunchItems,
+      status: lunchStatus,
+      notes: lunchNotes,
+    } = parseMenuCellFloor3(lunchCellHtml);
+
     if (lunchStatus === 'open' && lunchItems.length > 0) {
       allMeals.push({
         restaurant,
@@ -219,11 +239,14 @@ function parseFloor3Menu(tableHtml: string, date: Date): Meal[] {
       });
     }
 
-
     // 석식 파싱
     const dinnerCellHtml = dinnerCell.innerHTML.trim();
-    const { items: dinnerItems, status: dinnerStatus, notes: dinnerNotes } = parseMenuCellFloor3(dinnerCellHtml);
-    
+    const {
+      items: dinnerItems,
+      status: dinnerStatus,
+      notes: dinnerNotes,
+    } = parseMenuCellFloor3(dinnerCellHtml);
+
     if (dinnerStatus === 'open' && dinnerItems.length > 0) {
       allMeals.push({
         restaurant,
@@ -255,47 +278,5 @@ function parseFloor3Menu(tableHtml: string, date: Date): Meal[] {
  * @param sday - 대상 날짜의 UTC 자정 Unix 타임스탬프 (초 단위)
  */
 export async function crawlDguCoopFloor3(sday: number): Promise<Meal[]> {
-  const BASE_URL = 'https://dgucoop.dongguk.edu/mobile/menu.html';
-  const RESTAURANT_CODE = 5; // 3층 식당
-  const url = `${BASE_URL}?code=${RESTAURANT_CODE}&sday=${sday}`;
-
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-
-    const outputDir = path.join(__dirname, 'debug_output');
-    await fs.mkdir(outputDir, { recursive: true });
-
-    // EUC-KR 변환 없이 res.text() 사용
-    const html = await res.text();
-    const dom = new JSDOM(html);
-    const document = dom.window.document;
-
-    // 테이블 선택자 (동일한 'li > table' 사용)
-    const selector = 'li > table';
-    const tableNode = document.querySelector<HTMLTableElement>(selector);
-
-    if (!tableNode) {
-      throw new Error(`크롤링 실패: 3층 식당 테이블을 찾을 수 없습니다. (Selector: ${selector})`);
-    }
-
-    // 3. 파서 실행
-    const date = new Date(sday * 1000); 
-    const menuData = parseFloor3Menu(tableNode.outerHTML, date);
-    
-    // --- (디버깅용 파일 저장) ---
-    await fs.writeFile(path.join(outputDir, 'fetched_table_floor3.html'), tableNode.outerHTML);
-    console.log(`[${date.toLocaleDateString()}] 3층 식당 메뉴(${menuData.length}개) 파싱 성공.`);
-    await fs.writeFile(path.join(outputDir, 'parsed_menu_floor3.json'), JSON.stringify(menuData, null, 2));
-    console.log('Parsed JSON data saved to debug_output/parsed_menu_floor3.json');
-    // ----------------------------
-
-    return menuData;
-
-  } catch (error) {
-    console.error('크롤링 중 오류 발생:', error);
-    return [];
-  }
+  return fetchAndParse(3, sday, parseFloor3Menu);
 }

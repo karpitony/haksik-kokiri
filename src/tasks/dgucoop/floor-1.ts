@@ -1,15 +1,10 @@
 import { JSDOM } from 'jsdom';
 import { DayOfWeek, Restaurant, Meal, MenuItem } from '../../types/meal';
 import { getDayOfWeek } from '../utils/day';
-import { fileURLToPath } from 'url';
-import { promises as fs } from 'fs';
-import * as path from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { fetchAndParse } from '../utils/crawler';
 
 /**
- * 영업시간 문자열(예: "10:00~14:00")을 기반으로 'lunch', 'dinner', 'both'를 반환합니다.
+ * 영업시간 문자열(예: "10:00~14:00")을 기반으로 'lunch', 'dinner', 'both'를 반환
  * 15:00 이전을 중식, 15:00 이후를 석식으로 구분.
  * @param timeString - "HH:MM~HH:MM" 형식의 문자열
  */
@@ -201,69 +196,5 @@ function parseFloor1Menu(tableHtml: string, date: Date): Meal[] {
  * @param sday - 대상 날짜의 UTC 자정 Unix 타임스탬프 (초 단위)
  */
 export async function crawlDguCoopFloor1(sday: number): Promise<Meal[]> {
-  const BASE_URL = 'https://dgucoop.dongguk.edu/mobile/menu.html';
-  const RESTAURANT_CODE = 7; // 1층 식당
-  const url = `${BASE_URL}?code=${RESTAURANT_CODE}&sday=${sday}`;
-
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
-
-    const outputDir = path.join(__dirname, 'debug_output');
-    await fs.mkdir(outputDir, { recursive: true });
-
-    const html = await res.text();
-    const dom = new JSDOM(html);
-    const document = dom.window.document;
-
-    // 2. CSS 선택자로 테이블 찾기
-    const selector = 'li > table';
-    const tableNode = document.querySelector<HTMLTableElement>(selector);
-
-    if (!tableNode) {
-      // 더 구체적인 셀렉터로 재시도
-      const fallbackSelector =
-        'body > div.ui-page.ui-body-c.ui-page-active > div.ui-content > ul > li:nth-child(3) > table';
-      const fallbackNode = document.querySelector<HTMLTableElement>(fallbackSelector);
-
-      if (!fallbackNode) {
-        throw new Error(
-          `크롤링 실패: 1층 식당 테이블을 찾을 수 없습니다. (Selectors: ${selector}, ${fallbackSelector})`,
-        );
-      }
-      return crawlWithNode(fallbackNode, sday, outputDir);
-    }
-
-    return crawlWithNode(tableNode, sday, outputDir);
-  } catch (error) {
-    console.error('크롤링 중 오류 발생:', error);
-    return [];
-  }
-}
-
-/**
- * 찾은 테이블 노드를 기반으로 파싱 및 저장을 수행
- */
-async function crawlWithNode(
-  tableNode: HTMLTableElement,
-  sday: number,
-  outputDir: string,
-): Promise<Meal[]> {
-  await fs.writeFile(path.join(outputDir, 'fetched_table_floor1.html'), tableNode.outerHTML);
-  console.log('Target HTML table saved to debug_output/fetched_table_floor1.html');
-
-  // 3. 파서 실행
-  // sday (초)를 밀리초(ms)로 변환하여 Date 객체 생성
-  const date = new Date(sday * 1000);
-  const menuData = parseFloor1Menu(tableNode.outerHTML, date);
-
-  console.log(`[${date.toLocaleDateString()}] 1층 식당 메뉴(${menuData.length}개) 파싱 성공.`);
-  await fs.writeFile(
-    path.join(outputDir, 'parsed_menu_floor1.json'),
-    JSON.stringify(menuData, null, 2),
-  );
-  console.log('Parsed JSON data saved to debug_output/parsed_menu_floor1.json');
-  return menuData;
+  return fetchAndParse(1, sday, parseFloor1Menu);
 }

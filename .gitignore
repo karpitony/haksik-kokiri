@@ -1,6 +1,8 @@
 # prod
 dist/
 
+debug_output/
+
 # dev
 .yarn/
 !.yarn/releases
